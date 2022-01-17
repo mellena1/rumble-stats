@@ -1,0 +1,4 @@
+CREATE TABLE Player (
+    ID TEXT NOT NULL PRIMARY KEY,
+    UserName TEXT NOT NULL
+);
