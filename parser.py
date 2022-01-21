@@ -1,11 +1,12 @@
+from datetime import datetime
 import logging
 from multiprocessing import Pool
 import os
-import sqlite3
 import sys
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import carball
+import psycopg
 
 
 logging.basicConfig(
@@ -13,7 +14,6 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger("rumbleStats")
-db_con = sqlite3.connect("rumbleStats.db")
 
 item_translation = {
     'BALL_FREEZE': 'FREEZE',
@@ -30,42 +30,53 @@ item_translation = {
 }
 
 
-def parse_replays(directory: str):
+def main(directory: str):
+    with psycopg.connect(
+        host="localhost", dbname="rumble", user="rumble", password="rumble"
+    ) as conn:
+        parse_replays(conn, directory)
+
+
+def parse_replays(db: psycopg.Connection, directory: str):
+    already_in_db = done_replays(db)
+    print(already_in_db)
+
     replays = []
     for file in os.listdir(directory):
         if not file.endswith(".replay"):
             continue
 
         full_path = os.path.join(directory, file)
+        if full_path in already_in_db:
+            continue
+
         replays.append(full_path)
 
+    parsed_replays = []
     with Pool() as pool:
-        pool.map(parse_replay, replays)
+        parsed_replays = pool.map(parse_replay, replays)
 
-    db_con.close()
+    for r in parsed_replays:
+        logger.info("inserting %s", r[0])
+        insert_game(db, r[0], r[1])
+
+    db.commit()
 
 
-def parse_replay(file_path: str):
+def parse_replay(file_path: str) -> Tuple[str, Dict]:
     logger.info("parsing %s", file_path)
 
-    replay_data = get_replay_data(file_path)
-    insert_game_data(db_con, file_path, replay_data)
-    db_con.commit()
+    return (file_path, get_replay_data(file_path))
 
 
-def insert_game_data(db: sqlite3.Connection, file_name: str, game_data: Dict):
-    insert_game(db, file_name, game_data)
-    insert_players(db, game_data)
-
-
-def insert_game(db: sqlite3.Connection, file_name: str, game_data: Dict):
+def insert_game(db: psycopg.Connection, file_name: str, game_data: Dict):
     game_id = game_data["gameMetadata"]["id"]
     match_length = game_data["gameMetadata"]["length"]
-    match_date = game_data["gameMetadata"]["time"]
+    match_date = datetime.utcfromtimestamp(int(game_data["gameMetadata"]["time"]))
     team0_score = game_data["gameMetadata"]["score"]["team0Score"]
     team1_score = game_data["gameMetadata"]["score"]["team1Score"]
 
-    team0_is_orange = game_data["teams"][0]["isOrange"]
+    team0_is_orange = bool(game_data["teams"][0]["isOrange"])
     orange_score = 0
     blue_score = 0
     if team0_is_orange:
@@ -79,11 +90,13 @@ def insert_game(db: sqlite3.Connection, file_name: str, game_data: Dict):
     db.execute(
         """
         INSERT INTO Game (ID, ReplayFileName, OrangeScore, BlueScore, MatchLengthSeconds, MatchDate)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING;
     """,
         vals,
     )
+
+    insert_players(db, game_data)
 
     insert_goals(db, game_id, game_data["gameMetadata"]["goals"])
 
@@ -101,17 +114,17 @@ def insert_game(db: sqlite3.Connection, file_name: str, game_data: Dict):
     )
 
 
-def insert_players(db: sqlite3.Connection, game_data: Dict):
+def insert_players(db: psycopg.Connection, game_data: Dict):
     game_id = game_data["gameMetadata"]["id"]
 
     for player in game_data["players"]:
         player_id = player["id"]["id"]
         player_name = player["name"]
-        is_orange = player["isOrange"]
+        is_orange = bool(player["isOrange"])
 
         db.execute(
             """
-            INSERT INTO Player (ID, UserName) VALUES (?, ?)
+            INSERT INTO Player (ID, UserName) VALUES (%s, %s)
             ON CONFLICT DO NOTHING;
         """,
             (player_id, player_name),
@@ -119,7 +132,8 @@ def insert_players(db: sqlite3.Connection, game_data: Dict):
 
         db.execute(
             """
-            INSERT INTO PlayerToGame (GameID, PlayerID, IsOrange) VALUES (?, ? ,?)
+            INSERT INTO PlayerToGame (GameID, PlayerID, IsOrange) VALUES (%s, %s ,%s)
+            ON CONFLICT DO NOTHING;
         """,
             (game_id, player_id, is_orange),
         )
@@ -130,13 +144,13 @@ def insert_players(db: sqlite3.Connection, game_data: Dict):
 
 
 def insert_player_rumble_item(
-    db: sqlite3.Connection, game_id: str, player_id: str, rumble_items: List[Dict]
+    db: psycopg.Connection, game_id: str, player_id: str, rumble_items: List[Dict]
 ):
     for item in rumble_items:
         db.execute(
             """
             INSERT INTO PlayerItemStat (GameID, PlayerID, Item, Used, Unused, AverageHold)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING;
         """,
             (
@@ -151,13 +165,13 @@ def insert_player_rumble_item(
 
 
 def insert_team_rumble_item(
-    db: sqlite3.Connection, game_id: str, is_orange: bool, rumble_items: List[Dict]
+    db: psycopg.Connection, game_id: str, is_orange: bool, rumble_items: List[Dict]
 ):
     for item in rumble_items:
         db.execute(
             """
             INSERT INTO TeamItemStat (GameID, IsOrange, Item, Used, Unused, AverageHold)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING;
         """,
             (
@@ -171,7 +185,7 @@ def insert_team_rumble_item(
         )
 
 
-def insert_goals(db: sqlite3.Connection, game_id: str, goals: List[Dict]):
+def insert_goals(db: psycopg.Connection, game_id: str, goals: List[Dict]):
     for goal in goals:
         player_id = goal["playerId"]["id"]
         frame = goal["frameNumber"]
@@ -183,7 +197,7 @@ def insert_goals(db: sqlite3.Connection, game_id: str, goals: List[Dict]):
         db.execute(
             """
             INSERT INTO Goal (GameID, PlayerID, Frame, PreItems, ItemScoredWith)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING;
         """,
             (game_id, player_id, frame, pre_items, item_scored_with),
@@ -195,9 +209,10 @@ def get_replay_data(file: str) -> Dict:
     return analysis_manager.get_json_data()
 
 
-def done_replays(db: sqlite3.Connection) -> List[str]:
-    db.execute("""SELECT ReplayFileName FROM Game;""").fetchall()
+def done_replays(db: psycopg.Connection) -> List[str]:
+    rows = db.execute("""SELECT ReplayFileName FROM Game;""").fetchall()
+    return [r[0] for r in rows]
 
 
 if __name__ == "__main__":
-    parse_replays("replays")
+    main("replays")

@@ -1,6 +1,8 @@
 analysis*.json
 replays
 rumbleStats.db
+.pgadmin
+pgdata
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

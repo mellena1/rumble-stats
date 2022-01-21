@@ -9,7 +9,7 @@ CREATE TABLE Game (
     OrangeScore INT NOT NULL,
     BlueScore INT NOT NULL,
     MatchLengthSeconds REAL NOT NULL,
-    MatchDate DATETIME NOT NULL
+    MatchDate TIMESTAMP NOT NULL
 );
 
 CREATE TABLE PlayerToGame (
