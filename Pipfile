@@ -8,6 +8,7 @@ carball = "*"
 python-ballchasing = "*"
 requests = "*"
 psycopg = {extras = ["binary"], version = "*"}
+matplotlib = "*"
 
 [dev-packages]
 flake8 = "*"

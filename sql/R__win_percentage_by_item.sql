@@ -3,5 +3,9 @@ CREATE OR REPLACE VIEW win_percentage_by_item_players_v AS
     FROM PlayerItemStat s
     INNER JOIN PlayerToGame pg ON pg.GameID = s.GameID AND pg.PlayerID = s.PlayerID
     INNER JOIN Game g ON g.ID = s.GameID
-	INNER JOIN Player p ON p.ID = pg.PlayerID
     GROUP BY s.PlayerID, s.Item, ItemCount;
+
+CREATE OR REPLACE VIEW game_result_by_item_teams_v AS
+    SELECT s.GameID, s.IsOrange, s.Item, s.Used+s.Unused as ItemCount, team_won_game(s.IsOrange, s.GameID)::int as won
+    FROM TeamItemStat s
+    GROUP BY s.GameID, s.IsOrange, s.Item, ItemCount;
